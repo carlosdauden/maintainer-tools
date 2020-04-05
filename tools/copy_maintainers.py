@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# License AGPLv3 (http://www.gnu.org/licenses/agpl-3.0-standalone.html)
 from __future__ import absolute_import, print_function
 
 """
@@ -57,11 +58,20 @@ class GHTeamList(object):
         self._teams = {t.name: t for t in self._org.iter_teams()}
 
     def get_project_team(self, project):
-        return self._teams.get(project.name)
+        team = self._teams.get(project.name)
+        if team:
+            return team
+        team = self._teams.get(project.name + ' Maintainers')
+        if team:
+            return team
+        team = self._teams.get('Local ' + project.name + ' Maintainers')
+        return team
 
     def get_project_psc_team(self, project):
         main_team = self.get_project_team(project)
-        name = project.name + u' PSC Representative'
+        if not main_team:
+            return None
+        name = main_team.name + u' PSC Representative'
         team = self._teams.get(name)
         if team is None and main_team is not None:
             team = self.create_psc_team(project, name, main_team)
@@ -77,7 +87,7 @@ class GHTeamList(object):
                     print('Added repo %s to team %s -> %s' %
                           (repo_name, team.name,
                            'OK' if status else 'NOK'))
-        print(list(r.name for r in team.iter_repos()))
+            print(list(r.name for r in team.iter_repos()))
         return team
 
     def create_psc_team(self, project, team_name, main_team):
@@ -105,7 +115,7 @@ def copy_users(odoo, team=None, dry_run=False):
 
     # on odoo, the model is a project, but they are teams on GitHub
     Project = odoo.model('project.project')
-    base_domain = [('privacy_visibility = public'),
+    base_domain = [('privacy_visibility', '!=', 'followers'),
                    ]
     if team == 'OCA Contributors':
         projects = [get_cla_project(odoo)]
@@ -142,6 +152,7 @@ def copy_users(odoo, team=None, dry_run=False):
         users = psc_users + list(odoo_project.members)
         user_logins = set(['oca-transbot',
                            'OCA-git-bot',
+                           'oca-travis',
                            ])
         psc_user_logins = set()
         for user in users:

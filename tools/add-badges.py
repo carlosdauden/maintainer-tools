@@ -9,7 +9,7 @@ import pdb
 # Runbot urls need the repo id from the table in the runbot server.
 # This file is the output of a select id, name from there.
 for repo_list_line in open('repos_with_ids.txt'):
-    m = re.search('(\d+)\|github.com/OCA/(.*)', repo_list_line)
+    m = re.search(r'(\d+)\|github.com/OCA/(.*)', repo_list_line)
     repo_name = m.group(2)
     repo_id = m.group(1)
     print(repo_name)
@@ -55,25 +55,11 @@ for repo_list_line in open('repos_with_ids.txt'):
                 sys.stdout.write(new_lines)
                 stuff_added = True
 
-        transifex_folder = "OCA-" + repo_name + version.replace('.', '-')
-        transifex_lines = (
-            "Translation Status\n"
-            "------------------\n"
-            "[![Transifex Status]"
-            "(https://www.transifex.com/projects/p/{0}/chart/image_png)]"
-            "(https://www.transifex.com/projects/p/{0})\n".format(
-                transifex_folder
-            )
-        )
-
-        with open("REAMDME.md", "a") as readme_file:  # append
-            readme_file.write(transifex_lines)
-
         subprocess.check_call(['git', 'add', '--all'])
         subprocess.check_call(
             ['git', 'commit', '-m',
              '''\
-add badges and files for transifex, runbot, codeclimate
+add badges and files for runbot, codeclimate
 
 This is an automatic commit done with the add-badges.py script
 in maintainers-tools.

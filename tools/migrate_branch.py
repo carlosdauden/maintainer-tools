@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 #  -*- coding: utf-8 -*-
+# License AGPLv3 (http://www.gnu.org/licenses/agpl-3.0-standalone.html)
 """
 This script helps to create a new branch for a new Odoo version from the
 another existing branch, making the needed changes on contents.
@@ -89,11 +90,13 @@ promote its widespread use.
 To contribute to this module, please visit http://odoo-community.org.
 """
 
+from __future__ import print_function
 import argparse
 import re
 from . import github_login
 from . import oca_projects
 from .config import read_config
+from github3.exceptions import NotFoundError
 
 MANIFESTS = ('__openerp__.py', '__manifest__.py')
 
@@ -105,7 +108,7 @@ class BranchMigrator(object):
         self.gh_token = config.get('GitHub', 'token')
         # Connect to GitHub
         self.github = github_login.login()
-        gh_user = self.github.user()
+        gh_user = self.github.me()
         if not gh_user.email and not email:
             raise Exception(
                 'Email required to commit to github. Please provide one on '
@@ -120,8 +123,8 @@ class BranchMigrator(object):
     def _replace_content(self, repo, path, replace_list, gh_file=None):
         if not gh_file:
             # Re-read path for retrieving content
-            gh_file = repo.contents(path, self.gh_target_branch)
-        content = gh_file.decoded
+            gh_file = repo.file_contents(path, self.gh_target_branch)
+        content = gh_file.decoded.decode('utf-8')
         for replace in replace_list:
             content = re.sub(replace[0], replace[1], content, flags=re.DOTALL)
         new_file_blob = repo.create_blob(content, encoding='utf-8')
@@ -158,8 +161,9 @@ class BranchMigrator(object):
         for root_content in root_contents.values():
             if root_content.type != 'dir':
                 continue
-            module_contents = repo.contents(
-                root_content.path, self.gh_target_branch)
+            module_contents = repo.directory_contents(
+                root_content.path, self.gh_target_branch, return_as=dict,
+            )
             for manifest_file in MANIFESTS:
                 manifest = module_contents.get(manifest_file)
                 if manifest:
@@ -167,10 +171,12 @@ class BranchMigrator(object):
             if manifest:
                 modules.append(root_content.path)
                 # Re-read path for retrieving content
-                gh_file = repo.contents(manifest.path, self.gh_target_branch)
+                gh_file = repo.file_contents(
+                    manifest.path, self.gh_target_branch,
+                )
                 manifest_dict = eval(gh_file.decoded)
                 if manifest_dict.get('installable') is None:
-                    src = ",?\s*}"
+                    src = r",?\s*}"
                     dest = ",\n    'installable': False,\n}"
                 else:
                     src = '["\']installable["\']: *True'
@@ -248,7 +254,7 @@ class BranchMigrator(object):
         the new branch.
         """
         tree_data = []
-        source_string = self.gh_source_branch.replace('.', '\.')
+        source_string = self.gh_source_branch.replace('.', r'\.')
         target_string = self.gh_target_branch
         source_string_dash = self.gh_source_branch.replace('.', '-')
         target_string_dash = self.gh_target_branch.replace('.', '-')
@@ -257,7 +263,7 @@ class BranchMigrator(object):
                 None: [
                     (source_string, target_string),
                     (source_string_dash, target_string_dash),
-                    ("\[//]: # \(addons\).*\[//]: # \(end addons\)",
+                    (r"\[//]: # \(addons\).*\[//]: # \(end addons\)",
                      "[//]: # (addons)\n[//]: # (end addons)"),
                 ],
             },
@@ -272,6 +278,9 @@ class BranchMigrator(object):
                     ("2.7", "3.5"),
                     (r'(?m)virtualenv:.*\n.*system_site_packages: true\n', ''),
                 ],
+                u'12.0': [
+                    (r'addons:\n', r'addons:\n  postgresql: "9.6"'),
+                ],
             },
         }
         for filename in REPLACES:
@@ -284,13 +293,13 @@ class BranchMigrator(object):
                 replaces += REPLACES[filename][version]
             tree_data.append(self._replace_content(repo, filename, replaces))
         self._create_commit(
-            repo, tree_data, "[MIG] Update metafiles")
+            repo, tree_data, "[MIG] Update metafiles\n\n[skip ci]")
 
     def _make_default_branch(self, repo):
         repo.edit(repo.name, default_branch=self.gh_target_branch)
 
     def _create_branch_milestone(self, repo):
-        for milestone in repo.iter_milestones():
+        for milestone in repo.milestones():
             if milestone.title == self.gh_target_branch:
                 return milestone
         return repo.create_milestone(self.gh_target_branch)
@@ -298,44 +307,56 @@ class BranchMigrator(object):
     def _create_migration_issue(self, repo, modules, milestone):
         title = "Migration to version %s" % self.gh_target_branch
         # Check first if it already exists
-        for issue in repo.iter_issues(milestone=milestone.number):
+        for issue in repo.issues(milestone=milestone.number):
             if issue.title == title:
                 return issue
         body = ("# Todo\n\nhttps://github.com/OCA/maintainer-tools/wiki/"
                 "Migration-to-version-%s\n\n# Modules to migrate\n\n" %
                 self.gh_target_branch)
         body += "\n".join(["- [ ] %s" % x for x in modules])
+        body += (
+            "\n\nMissing module? Check https://github.com/OCA/maintainer-"
+            "tools/wiki/%5BFAQ%5D-Missing-modules-in-migration-issue-list"
+        )
         # Make sure labels exists
         labels = []
-        for label in repo.iter_labels():
+        for label in repo.labels():
             if label.name in ['help wanted', 'work in progress']:
                 labels.append(label.name)
         return repo.create_issue(
             title=title, body=body, milestone=milestone.number, labels=labels)
 
     def _migrate_project(self, project):
-        print "Migrating project %s/%s" % (self.gh_org, project)
+        print("Migrating project %s/%s" % (self.gh_org, project))
         # Create new branch
         repo = self.github.repository(self.gh_org, project)
-        source_branch = repo.branch(self.gh_source_branch)
-        if not source_branch:
-            print "Source branch non existing. Skipping..."
+        try:
+            source_branch = repo.branch(self.gh_source_branch)
+        except NotFoundError:
+            print("Source branch non existing. Skipping...")
             return
-        branch = repo.branch(self.gh_target_branch)
-        if branch:
-            print "Branch already exists. Skipping..."
+        try:
+            repo.branch(self.gh_target_branch)
+        except NotFoundError:
+            pass
+        else:
+            print("Branch already exists. Skipping...")
             return
         repo.create_ref(
             'refs/heads/%s' % self.gh_target_branch,
             source_branch.commit.sha)
-        root_contents = repo.contents('', self.gh_target_branch)
+        root_contents = repo.directory_contents(
+            '', self.gh_target_branch, return_as=dict,
+        )
         modules = self._mark_modules_uninstallable(repo, root_contents)
         if self.gh_target_branch == '10.0':
             self._rename_manifests(repo, root_contents)
         self._delete_unported_dir(repo, root_contents)
-        self._delete_setup_dirs(repo, root_contents, modules)
+        # TODO: Is this really needed?
+        # self._delete_setup_dirs(repo, root_contents, modules)
         self._update_metafiles(repo, root_contents)
-        self._make_default_branch(repo)
+        # TODO: GitHub is returning 404
+        # self._make_default_branch(repo)
         milestone = self._create_branch_milestone(repo)
         self._create_migration_issue(repo, sorted(modules), milestone)
 
